@@ -34,15 +34,28 @@ CAM_NAMES_NUSC_converter = [
     'CAM_BACK_RIGHT',
 ]
 
-class CamRender:
+class CamRender: # 定义相机视图渲染类
+    """
+    用于在NuScenes的多相机视图上渲染3D检测、运动轨迹和规划结果的类。
+    它会创建一个包含6个子图的matplotlib图像，每个子图对应一个相机视图。
+    """
     def __init__(
         self, 
-        plot_choices,
-        out_dir,
+        plot_choices, # 一个字典，指定哪些元素需要被绘制 (例如 {'det': True, 'motion': True})
+        out_dir,      # 输出图像的保存目录
     ):
-        self.plot_choices = plot_choices
-        self.pred_dir = os.path.join(out_dir, "cam_pred")
-        os.makedirs(self.pred_dir, exist_ok=True)
+        """
+        CamRender的构造函数。
+
+        Args:
+            plot_choices (dict): 控制绘制哪些元素的字典。
+                                 例如: {'det': True, 'track': True, 'motion': True, 'planning': True, 'draw_pred': True}
+                                 这些选项决定了在调用render时具体会绘制哪些GT和预测信息。
+            out_dir (str): 保存渲染图像的根目录。渲染的相机图像会保存在此目录下的 "cam_pred" 子目录中。
+        """
+        self.plot_choices = plot_choices # 存储绘图选项
+        self.pred_dir = os.path.join(out_dir, "cam_pred") # 定义保存预测结果图像的子目录路径
+        os.makedirs(self.pred_dir, exist_ok=True) # 创建该目录 (如果目录已存在，则不执行任何操作)
 
     def reset_canvas(self):
         plt.close()

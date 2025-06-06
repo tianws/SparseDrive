@@ -85,59 +85,102 @@ color_mapping = np.asarray([
 ]) / 255
 
 
-class BEVRender:
+class BEVRender: # 定义鸟瞰图（BEV）渲染类
+    """
+    用于创建和保存BEV（鸟瞰图）可视化结果的类。
+    它可以渲染GT（真实数据）和模型预测的各种元素，如检测框、轨迹、地图等。
+    """
     def __init__(
         self, 
-        plot_choices,
-        out_dir,
-        xlim = 40,
-        ylim = 40,
+        plot_choices, # 一个字典，指定哪些元素需要被绘制 (例如 {'det': True, 'map': False})
+        out_dir,      # 输出图像的保存目录
+        xlim = 40,    # BEV视图x轴的范围 (-xlim, xlim)，单位米
+        ylim = 40,    # BEV视图y轴的范围 (-ylim, ylim)，单位米
     ):
-        self.plot_choices = plot_choices
-        self.xlim = xlim
-        self.ylim = ylim
-        self.gt_dir = os.path.join(out_dir, "bev_gt")
-        self.pred_dir = os.path.join(out_dir, "bev_pred")
+        """
+        BEV渲染器初始化。
+
+        Args:
+            plot_choices (dict): 控制在BEV上绘制哪些元素的字典。
+                                 例如: {'det': True, 'track': True, 'motion': True, 'map': True, 'planning': True, 'draw_pred': True}
+                                 这些选项决定了在调用render时具体会绘制哪些GT和预测信息。
+            out_dir (str): 保存渲染图像的根目录。BEV图像会保存在此目录下的 "bev_gt" 和 "bev_pred" 子目录中。
+            xlim (int, optional): BEV视图X轴的半范围 (米)。默认为40，表示X轴范围为[-40, 40]。
+            ylim (int, optional): BEV视图Y轴的半范围 (米)。默认为40，表示Y轴范围为[-40, 40]。
+        """
+        self.plot_choices = plot_choices # 存储绘图选项
+        self.xlim = xlim # 设置x轴的半范围
+        self.ylim = ylim # 设置y轴的半范围
+        # 定义保存GT和预测结果BEV图像的子目录路径
+        self.gt_dir = os.path.join(out_dir, "bev_gt") # GT图像保存路径
+        self.pred_dir = os.path.join(out_dir, "bev_pred") # 预测图像保存路径
+        # 创建输出目录 (如果目录已存在，则不执行任何操作)
         os.makedirs(self.gt_dir, exist_ok=True)
         os.makedirs(self.pred_dir, exist_ok=True)
 
-    def reset_canvas(self):
-        plt.close()
-        self.fig, self.axes = plt.subplots(1, 1, figsize=(20, 20))
-        self.axes.set_xlim(- self.xlim, self.xlim)
-        self.axes.set_ylim(- self.ylim, self.ylim)
-        self.axes.axis('off')
+    def reset_canvas(self): # 重置绘图画布
+        """
+        关闭当前的matplotlib图像，并创建一个新的、干净的画布和坐标轴，
+        设置好坐标范围和关闭坐标轴显示。
+        """
+        plt.close() # 关闭任何已存在的matplotlib图像窗口
+        self.fig, self.axes = plt.subplots(1, 1, figsize=(20, 20)) # 创建一个新的图像和子图，设置图像大小
+        self.axes.set_xlim(-self.xlim, self.xlim) # 设置x轴范围
+        self.axes.set_ylim(-self.ylim, self.ylim) # 设置y轴范围
+        self.axes.axis('off') # 关闭坐标轴的显示 (刻度、标签等)
 
-    def render(
+    def render( # 主渲染函数，生成GT和预测的BEV图像
         self,
-        data, 
-        result,
-        index,
+        data,    # 输入数据字典，包含GT信息
+        result,  # 模型预测结果字典
+        index,   # 当前样本的索引或名称，用于命名输出文件
     ):
-        self.reset_canvas()
-        self.draw_detection_gt(data)
-        self.draw_motion_gt(data)
-        self.draw_map_gt(data)
-        self.draw_planning_gt(data)
-        self._render_sdc_car()
-        self._render_command(data)
-        self._render_legend()
+        """
+        为给定的数据和结果渲染GT和预测的BEV图像。
+        此方法会分别生成一张包含GT信息的BEV图和一张包含预测信息的BEV图。
+
+        Args:
+            data (dict): 包含GT（真实标签）信息的数据字典。
+                         需要相关的键如 'gt_labels_3d', 'gt_bboxes_3d', 'gt_agent_fut_trajs',
+                         'map_infos', 'gt_ego_fut_trajs', 'gt_ego_fut_cmd'。
+            result (dict): 包含模型预测结果的字典。
+                           需要相关的键如 'boxes_3d', 'scores_3d', 'labels_3d', 'instance_ids',
+                           'trajs_3d', 'trajs_score', 'vectors', 'planning', 'planning_score'等。
+            index (int or str): 当前样本的索引或标识，用于生成文件名。
+
+        Returns:
+            tuple[str, str]: 保存的GT BEV图像路径和预测BEV图像路径。
+        """
+        # --- 渲染GT BEV图像 ---
+        self.reset_canvas() # 重置画布，为绘制GT做准备
+        # 根据plot_choices的设置，在画布上绘制各种GT元素
+        if self.plot_choices.get('det', False): self.draw_detection_gt(data) # 绘制GT检测框
+        if self.plot_choices.get('motion', False): self.draw_motion_gt(data)   # 绘制GT智能体运动轨迹
+        if self.plot_choices.get('map', False): self.draw_map_gt(data)      # 绘制GT地图元素
+        if self.plot_choices.get('planning', False): self.draw_planning_gt(data) # 绘制GT自车规划轨迹
+        self._render_sdc_car() # 在BEV中心绘制自车图标
+        self._render_command(data) # 在图上显示当前的驾驶命令
+        self._render_legend()    # 绘制图例信息
+        # 生成GT BEV图像的保存路径，文件名用索引格式化 (例如 0000.jpg, 0001.jpg)
         save_path_gt = os.path.join(self.gt_dir, str(index).zfill(4) + '.jpg')
-        self.save_fig(save_path_gt)
+        self.save_fig(save_path_gt) # 保存GT BEV图像
 
-        self.reset_canvas()
-        self.draw_detection_pred(result)
-        self.draw_track_pred(result)
-        self.draw_motion_pred(result)
-        self.draw_map_pred(result)
-        self.draw_planning_pred(data, result)
-        self._render_sdc_car()
-        self._render_command(data)
-        self._render_legend()
+        # --- 渲染预测结果BEV图像 ---
+        self.reset_canvas() # 再次重置画布，为绘制预测结果做准备
+        if self.plot_choices.get('draw_pred', False): # 检查是否需要绘制预测结果
+            if self.plot_choices.get('det', False): self.draw_detection_pred(result) # 绘制预测的检测框
+            if self.plot_choices.get('track', False): self.draw_track_pred(result)     # 绘制跟踪结果（历史框和中心连线）
+            if self.plot_choices.get('motion', False): self.draw_motion_pred(result)  # 绘制预测的智能体运动轨迹
+            if self.plot_choices.get('map', False): self.draw_map_pred(result)       # 绘制预测的地图元素
+            if self.plot_choices.get('planning', False): self.draw_planning_pred(data, result) # 绘制预测的自车规划轨迹
+        self._render_sdc_car() # 绘制自车图标
+        self._render_command(data) # 显示驾驶命令
+        self._render_legend()    # 绘制图例
+        # 生成预测结果BEV图像的保存路径
         save_path_pred = os.path.join(self.pred_dir, str(index).zfill(4) + '.jpg')
-        self.save_fig(save_path_pred)
+        self.save_fig(save_path_pred) # 保存预测结果BEV图像
 
-        return save_path_gt, save_path_pred
+        return save_path_gt, save_path_pred # 返回两个图像的保存路径
 
     def save_fig(self, filename):
         plt.subplots_adjust(top=1, bottom=0, right=1, left=0,
