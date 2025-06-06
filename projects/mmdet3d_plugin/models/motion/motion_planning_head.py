@@ -30,115 +30,134 @@ from ..blocks import linear_relu_ln
 from ..instance_bank import topk
 
 
-@HEADS.register_module()
-class MotionPlanningHead(BaseModule):
+@HEADS.register_module() # 将MotionPlanningHead注册到MMDetection的HEADS注册表中
+class MotionPlanningHead(BaseModule): # 定义运动规划头
+    """
+    用于运动预测和路径规划的头部模块。
+    该模块集成了多个组件，包括实例队列（用于时序信息）、图神经网络（用于交互建模）、
+    以及特定的采样器、损失函数和解码器，以实现对场景中其他智能体的运动预测
+    和自车（ego）的路径规划。
+    """
     def __init__(
         self,
-        fut_ts=12,
-        fut_mode=6,
-        ego_fut_ts=6,
-        ego_fut_mode=3,
-        motion_anchor=None,
-        plan_anchor=None,
-        embed_dims=256,
-        decouple_attn=False,
-        instance_queue=None,
-        operation_order=None,
-        temp_graph_model=None,
-        graph_model=None,
-        cross_graph_model=None,
-        norm_layer=None,
-        ffn=None,
-        refine_layer=None,
-        motion_sampler=None,
-        motion_loss_cls=None,
-        motion_loss_reg=None,
-        planning_sampler=None,
-        plan_loss_cls=None,
-        plan_loss_reg=None,
-        plan_loss_status=None,
-        motion_decoder=None,
-        planning_decoder=None,
-        num_det=50,
-        num_map=10,
+        fut_ts=12,  # (Agent)未来轨迹的时间步长 (例如，预测未来12帧的轨迹)
+        fut_mode=6,  # (Agent)未来轨迹的模态数量 (例如，预测6种可能的未来轨迹)
+        ego_fut_ts=6,  # (Ego)自车规划的未来时间步长
+        ego_fut_mode=3,  # (Ego)自车规划的每个命令下的轨迹模态数量 (配置文件中可能是6)
+        motion_anchor=None,  # 运动锚点文件路径 (.npy) 或已加载的numpy数组 (预定义的轨迹原型)
+        plan_anchor=None,  # 规划锚点文件路径 (.npy) 或已加载的numpy数组 (预定义的ego轨迹原型)
+        embed_dims=256,  # 特征嵌入维度
+        decouple_attn=False,  # 是否在某些注意力机制中解耦内容和位置嵌入
+        instance_queue=None,  # 实例队列的配置字典 (用于存储和管理历史实例信息)
+        operation_order=None,  # 定义模块内部特征处理层操作顺序的列表 (例如 ['temp_gnn', 'gnn', 'refine'])
+        temp_graph_model=None,  # 时序图模型的配置字典 (用于处理实例间的时序关系)
+        graph_model=None,  # 交互图模型的配置字典 (用于处理当前帧实例间的关系)
+        cross_graph_model=None,  # 跨类型图模型的配置字典 (例如，agent与map元素间的交互)
+        norm_layer=None,  # 归一化层的配置字典
+        ffn=None,  # 前馈网络的配置字典
+        refine_layer=None,  # 优化层的配置字典 (例如 MotionPlanningRefinementModule)
+        motion_sampler=None,  # 运动预测的目标采样器/分配器配置
+        motion_loss_cls=None,  # 运动预测的分类损失配置 (例如，轨迹模态分类)
+        motion_loss_reg=None,  # 运动预测的回归损失配置 (轨迹点回归)
+        planning_sampler=None,  # 规划的目标采样器/分配器配置
+        plan_loss_cls=None,  # 规划的分类损失配置 (例如，规划模态分类)
+        plan_loss_reg=None,  # 规划的回归损失配置 (轨迹点回归)
+        plan_loss_status=None,  # 规划的状态损失配置 (例如，速度、加速度等ego状态)
+        motion_decoder=None,  # 运动预测解码器配置 (用于后处理生成最终结果)
+        planning_decoder=None,  # 规划解码器配置
+        num_det=50,  # 从检测结果中选取的top-k物体实例数量，用于后续的交互和运动预测
+        num_map=10,  # 从地图元素检测结果中选取的top-k元素数量，用于后续的交互
     ):
-        super(MotionPlanningHead, self).__init__()
-        self.fut_ts = fut_ts
-        self.fut_mode = fut_mode
-        self.ego_fut_ts = ego_fut_ts
-        self.ego_fut_mode = ego_fut_mode
+        super(MotionPlanningHead, self).__init__() # 调用父类BaseModule的初始化
+        self.fut_ts = fut_ts # agent未来轨迹长度 (时间步数)
+        self.fut_mode = fut_mode # agent未来轨迹的模态数
+        self.ego_fut_ts = ego_fut_ts # ego未来轨迹长度
+        self.ego_fut_mode = ego_fut_mode # ego每个命令下的轨迹模态数
 
-        self.decouple_attn = decouple_attn
-        self.operation_order = operation_order
+        self.decouple_attn = decouple_attn # 是否在图模型注意力中解耦内容和位置
+        self.operation_order = operation_order # 内部各操作层的执行顺序列表
 
-        # =========== build modules ===========
-        def build(cfg, registry):
-            if cfg is None:
+        # =========== 构建各个子模块 ===========
+        def build(cfg, registry): # 内部辅助函数，用于从配置字典和注册表构建模块
+            if cfg is None: # 如果配置为None，则不构建，返回None
                 return None
-            return build_from_cfg(cfg, registry)
+            return build_from_cfg(cfg, registry) # 使用MMCV的工具函数构建
         
-        self.instance_queue = build(instance_queue, PLUGIN_LAYERS)
-        self.motion_sampler = build(motion_sampler, BBOX_SAMPLERS)
-        self.planning_sampler = build(planning_sampler, BBOX_SAMPLERS)
-        self.motion_decoder = build(motion_decoder, BBOX_CODERS)
-        self.planning_decoder = build(planning_decoder, BBOX_CODERS)
+        self.instance_queue = build(instance_queue, PLUGIN_LAYERS) # 构建实例队列模块
+        self.motion_sampler = build(motion_sampler, BBOX_SAMPLERS) # 构建运动目标采样/分配器
+        self.planning_sampler = build(planning_sampler, BBOX_SAMPLERS) # 构建规划目标采样/分配器
+        self.motion_decoder = build(motion_decoder, BBOX_CODERS) # 构建运动解码器
+        self.planning_decoder = build(planning_decoder, BBOX_CODERS) # 构建规划解码器
+
+        # op_config_map 将操作名称映射到其配置和对应的MMCV注册表
+        # 这样可以根据 operation_order 列表灵活构建处理流程
         self.op_config_map = {
-            "temp_gnn": [temp_graph_model, ATTENTION],
-            "gnn": [graph_model, ATTENTION],
-            "cross_gnn": [cross_graph_model, ATTENTION],
-            "norm": [norm_layer, NORM_LAYERS],
-            "ffn": [ffn, FEEDFORWARD_NETWORK],
-            "refine": [refine_layer, PLUGIN_LAYERS],
+            "temp_gnn": [temp_graph_model, ATTENTION],      # 时序图模型 (通常是某种注意力机制)
+            "gnn": [graph_model, ATTENTION],               # 场景内交互图模型
+            "cross_gnn": [cross_graph_model, ATTENTION],   # 跨模态交互图模型
+            "norm": [norm_layer, NORM_LAYERS],             # 归一化层
+            "ffn": [ffn, FEEDFORWARD_NETWORK],             # 前馈网络
+            "refine": [refine_layer, PLUGIN_LAYERS],       # 优化/预测层
         }
-        self.layers = nn.ModuleList(
+        self.layers = nn.ModuleList( # 根据operation_order构建一个包含多个操作层的ModuleList
             [
-                build(*self.op_config_map.get(op, [None, None]))
+                build(*self.op_config_map.get(op, [None, None])) # 如果操作名不在map中，则构建为None
                 for op in self.operation_order
             ]
         )
-        self.embed_dims = embed_dims
+        self.embed_dims = embed_dims # 存储嵌入维度
 
-        if self.decouple_attn:
-            self.fc_before = nn.Linear(
+        if self.decouple_attn: # 如果使用解耦注意力，定义额外的线性层用于拼接或分离特征和位置编码
+            self.fc_before = nn.Linear( # 注意力计算前，可能用于将拼接的(特征+位置)映射回原维度或扩展维度
                 self.embed_dims, self.embed_dims * 2, bias=False
             )
-            self.fc_after = nn.Linear(
+            self.fc_after = nn.Linear( # 注意力计算后，可能用于将注意力输出映射回原维度
                 self.embed_dims * 2, self.embed_dims, bias=False
             )
-        else:
+        else: # 如果不解耦，则使用恒等映射
             self.fc_before = nn.Identity()
             self.fc_after = nn.Identity()
 
-        self.motion_loss_cls = build_loss(motion_loss_cls)
-        self.motion_loss_reg = build_loss(motion_loss_reg)
-        self.plan_loss_cls = build_loss(plan_loss_cls)
-        self.plan_loss_reg = build_loss(plan_loss_reg)
-        self.plan_loss_status = build_loss(plan_loss_status)
+        # 构建各项损失函数
+        self.motion_loss_cls = build_loss(motion_loss_cls) # 运动模态分类损失
+        self.motion_loss_reg = build_loss(motion_loss_reg) # 运动轨迹回归损失
+        self.plan_loss_cls = build_loss(plan_loss_cls)     # 规划模态分类损失
+        self.plan_loss_reg = build_loss(plan_loss_reg)     # 规划轨迹回归损失
+        self.plan_loss_status = build_loss(plan_loss_status) # 规划状态损失
 
-        # motion init
-        motion_anchor = np.load(motion_anchor)
-        self.motion_anchor = nn.Parameter(
-            torch.tensor(motion_anchor, dtype=torch.float32),
-            requires_grad=False,
-        )
-        self.motion_anchor_encoder = nn.Sequential(
-            *linear_relu_ln(embed_dims, 1, 1),
-            Linear(embed_dims, embed_dims),
-        )
+        # 初始化运动锚点 (预定义的典型轨迹原型)
+        if motion_anchor is not None:
+            motion_anchor_data = np.load(motion_anchor) if isinstance(motion_anchor, str) else motion_anchor
+            self.motion_anchor = nn.Parameter( # (num_motion_classes, fut_mode, fut_ts, 2)
+                torch.tensor(motion_anchor_data, dtype=torch.float32),
+                requires_grad=False, # 锚点通常是固定的，不参与训练
+            )
+            self.motion_anchor_encoder = nn.Sequential( # 对运动锚点（通常是其末端点或整体形状）进行编码的网络
+                *linear_relu_ln(embed_dims, 1, 1), # 1个(线性+ReLU)+LN
+                Linear(embed_dims, embed_dims),
+            )
+        else:
+            self.motion_anchor = None
+            self.motion_anchor_encoder = None
 
-        # plan anchor init
-        plan_anchor = np.load(plan_anchor)
-        self.plan_anchor = nn.Parameter(
-            torch.tensor(plan_anchor, dtype=torch.float32),
-            requires_grad=False,
-        )
-        self.plan_anchor_encoder = nn.Sequential(
-            *linear_relu_ln(embed_dims, 1, 1),
-            Linear(embed_dims, embed_dims),
-        )
 
-        self.num_det = num_det
-        self.num_map = num_map
+        # 初始化规划锚点 (预定义的典型自车轨迹原型，可能对应不同命令或意图)
+        if plan_anchor is not None:
+            plan_anchor_data = np.load(plan_anchor) if isinstance(plan_anchor, str) else plan_anchor
+            self.plan_anchor = nn.Parameter( # (num_plan_cmds, ego_fut_mode, ego_fut_ts, 2)
+                torch.tensor(plan_anchor_data, dtype=torch.float32),
+                requires_grad=False,
+            )
+            self.plan_anchor_encoder = nn.Sequential( # 对规划锚点进行编码的网络
+                *linear_relu_ln(embed_dims, 1, 1),
+                Linear(embed_dims, embed_dims),
+            )
+        else:
+            self.plan_anchor = None
+            self.plan_anchor_encoder = None
+
+        self.num_det = num_det # 从检测头选取的top-k物体数量
+        self.num_map = num_map # 从地图头选取的top-k地图元素数量
 
     def init_weights(self):
         for i, op in enumerate(self.operation_order):
